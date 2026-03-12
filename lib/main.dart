@@ -7,6 +7,13 @@ import 'screens/notifications_screen.dart';
 import 'screens/wishlist_screen.dart';
 import 'services/notification_service.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:firebase_messaging/firebase_messaging.dart';
+
+@pragma('vm:entry-point')
+Future<void> _firebaseBackgroundHandler(RemoteMessage message) async {
+  await Firebase.initializeApp(options: DefaultFirebaseOptions.currentPlatform);
+  print("🔔 Background Notification: ${message.notification?.title}");
+}
 
 
 void main() async {
@@ -14,6 +21,9 @@ void main() async {
   await Firebase.initializeApp(
     options: DefaultFirebaseOptions.currentPlatform,
   );
+  
+  FirebaseMessaging.onBackgroundMessage(_firebaseBackgroundHandler);
+  
   await NotificationService().init();
   runApp(const GenexApp());
 }
@@ -29,36 +39,51 @@ class _GenexAppState extends State<GenexApp> {
   @override
   void initState() {
     super.initState();
+    _setupFCM();
     _listenForAlerts();
   }
 
-  void _listenForAlerts() {
-    // Listen for low stock
-    FirebaseFirestore.instance.collection('products').snapshots().listen((snapshot) {
-      for (var change in snapshot.docChanges) {
-        if (change.type == DocumentChangeType.modified || change.type == DocumentChangeType.added) {
-          final data = change.doc.data() as Map<String, dynamic>;
-          final stock = int.tryParse(data['Stock_Quantity']?.toString() ?? '0') ?? 0;
-          final name = data['Product_Name'] ?? 'Product';
-          
-          if (stock < 10) {
-            NotificationService().showNotification(
-              id: name.hashCode,
-              title: 'Low Stock Alert',
-              body: '$name is running low ($stock remaining).',
-            );
-          }
-        }
-      }
-    });
+  void _setupFCM() async {
+    final messaging = FirebaseMessaging.instance;
 
+    // Request permissions
+    NotificationSettings settings = await messaging.requestPermission(
+      alert: true,
+      badge: true,
+      sound: true,
+    );
+
+    if (settings.authorizationStatus == AuthorizationStatus.authorized) {
+      print('User granted permission');
+      
+      // Get token
+      String? token = await messaging.getToken();
+      print("📱 Device Token: $token");
+      
+      // Handle foreground messages
+      FirebaseMessaging.onMessage.listen((RemoteMessage message) {
+        print("🔔 Foreground Notification: ${message.notification?.title}");
+        if (message.notification != null) {
+          NotificationService().showNotification(
+            id: DateTime.now().millisecondsSinceEpoch ~/ 1000,
+            title: message.notification!.title ?? 'Notification',
+            body: message.notification!.body ?? '',
+          );
+        }
+      });
+    } else {
+      print('User declined or has not accepted permission');
+    }
+  }
+
+  void _listenForAlerts() {
     // Listen for new notifications
     final startupTime = DateTime.now();
     FirebaseFirestore.instance.collection('notifications').snapshots().listen((snapshot) {
       for (var change in snapshot.docChanges) {
         if (change.type == DocumentChangeType.added) {
           final data = change.doc.data() as Map<String, dynamic>;
-          final isRead = data['isRead'] ?? false;
+          final isRead = data['read'] ?? false;
           
           if (!isRead) {
             // Check if this is truly a newly created notification (after app startup)

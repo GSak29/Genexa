@@ -114,13 +114,26 @@ class _WishlistScreenState extends State<WishlistScreen> {
     });
   }
 
-  void _addSearchResultToManual(Map<String, dynamic> product) {
+  Future<void> _addSearchResultToManual(Map<String, dynamic> product) async {
+    final productId = product['Product_ID'];
+    final stockDoc = await _firestore.collection('products').doc(productId).get();
+    final stock = int.tryParse(stockDoc.data()?['Stock_Quantity']?.toString() ?? '0') ?? 0;
+
+    if (stock <= 0) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text("Cannot add ${product['Product_Name']}: Out of stock"), backgroundColor: Colors.red),
+        );
+      }
+      return;
+    }
+
     setState(() {
       _manualItems.add({
         'name': product['Product_Name'],
         'price': product['Price_Min_INR'],
         'category': product['Category'],
-        'id': product['Product_ID'],
+        'id': productId,
         'quantity': 1
       });
       _searchResults = [];
@@ -130,7 +143,20 @@ class _WishlistScreenState extends State<WishlistScreen> {
     );
   }
 
-  void _addProductToSubmission(String submissionId, Map<String, dynamic> product) {
+  Future<void> _addProductToSubmission(String submissionId, Map<String, dynamic> product) async {
+    final productId = product['Product_ID'];
+    final stockDoc = await _firestore.collection('products').doc(productId).get();
+    final stock = int.tryParse(stockDoc.data()?['Stock_Quantity']?.toString() ?? '0') ?? 0;
+
+    if (stock <= 0) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text("Cannot add ${product['Product_Name']}: Out of stock"), backgroundColor: Colors.red),
+        );
+      }
+      return;
+    }
+
     setState(() {
       final subIndex = _submissions.indexWhere((s) => s['id'] == submissionId);
       if (subIndex != -1) {
@@ -139,7 +165,7 @@ class _WishlistScreenState extends State<WishlistScreen> {
           'name': product['Product_Name'],
           'price': product['Price_Min_INR'],
           'category': product['Category'],
-          'id': product['Product_ID'],
+          'id': productId,
           'quantity': 1
         });
         _submissions[subIndex]['items'] = items;
@@ -164,29 +190,69 @@ class _WishlistScreenState extends State<WishlistScreen> {
     });
   }
 
-  void _updateItemQuantity(String submissionId, int itemIndex, int delta) {
-    setState(() {
-      final subIndex = _submissions.indexWhere((s) => s['id'] == submissionId);
-      if (subIndex != -1) {
-        final items = List<Map<String, dynamic>>.from(_submissions[subIndex]['items'].map((e) => Map<String, dynamic>.from(e)));
-        final int currentQty = items[itemIndex]['quantity'] ?? 1;
-        final int newQty = currentQty + delta;
-        if (newQty > 0) {
-          items[itemIndex]['quantity'] = newQty;
-          _submissions[subIndex]['items'] = items;
-          _recalculateSubmissionSummary(subIndex);
+  Future<void> _updateItemQuantity(String submissionId, int itemIndex, int delta) async {
+    final subIndex = _submissions.indexWhere((s) => s['id'] == submissionId);
+    if (subIndex == -1) return;
+
+    final item = _submissions[subIndex]['items'][itemIndex];
+    final int currentQty = item['quantity'] ?? 1;
+    final int requestedQty = currentQty + delta;
+
+    if (requestedQty <= 0) return;
+
+    if (delta > 0) {
+      final productId = item['id'];
+      final stockDoc = await _firestore.collection('products').doc(productId).get();
+      final availableStock = int.tryParse(stockDoc.data()?['Stock_Quantity']?.toString() ?? '0') ?? 0;
+
+      if (requestedQty > availableStock) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text("Stock limit reached! Only $availableStock items available."),
+              backgroundColor: Colors.orange,
+            ),
+          );
         }
+        return;
       }
+    }
+
+    setState(() {
+      final items = List<Map<String, dynamic>>.from(_submissions[subIndex]['items'].map((e) => Map<String, dynamic>.from(e)));
+      items[itemIndex]['quantity'] = requestedQty;
+      _submissions[subIndex]['items'] = items;
+      _recalculateSubmissionSummary(subIndex);
     });
   }
 
-  void _updateManualItemQuantity(int index, int delta) {
-    setState(() {
-      final int currentQty = _manualItems[index]['quantity'] ?? 1;
-      final int newQty = currentQty + delta;
-      if (newQty > 0) {
-        _manualItems[index]['quantity'] = newQty;
+  Future<void> _updateManualItemQuantity(int index, int delta) async {
+    final item = _manualItems[index];
+    final int currentQty = item['quantity'] ?? 1;
+    final int requestedQty = currentQty + delta;
+
+    if (requestedQty <= 0) return;
+
+    if (delta > 0) {
+      final productId = item['id'];
+      final stockDoc = await _firestore.collection('products').doc(productId).get();
+      final availableStock = int.tryParse(stockDoc.data()?['Stock_Quantity']?.toString() ?? '0') ?? 0;
+
+      if (requestedQty > availableStock) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text("Stock limit reached! Only $availableStock items available."),
+              backgroundColor: Colors.orange,
+            ),
+          );
+        }
+        return;
       }
+    }
+
+    setState(() {
+      _manualItems[index]['quantity'] = requestedQty;
     });
   }
 
