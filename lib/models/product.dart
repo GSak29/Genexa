@@ -22,7 +22,7 @@ class Product {
       category: data['Category']?.toString() ?? '',
       productName: data['Product_Name']?.toString() ?? '',
       stockQuantity: int.tryParse(data['Stock_Quantity']?.toString() ?? '0') ?? 0,
-      priceMin: double.tryParse(data['Price_Min_INR']?.toString() ?? '0.0') ?? 0.0,
+      priceMin: double.tryParse(data['Price']?.toString() ?? '0.0') ?? 0.0,
       priceMax: double.tryParse(data['Price_Max_INR']?.toString() ?? '0.0') ?? 0.0,
     );
   }

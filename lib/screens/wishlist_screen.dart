@@ -36,35 +36,95 @@ class _WishlistScreenState extends State<WishlistScreen> {
   }
 
   void _listenToWishlists() {
-    _database.child('wishlist_submissions').onValue.listen((event) {
-      if (event.snapshot.exists) {
-        final data = event.snapshot.value as Map<dynamic, dynamic>;
-        final List<Map<String, dynamic>> loadedSubmissions = [];
+    _database.child('wishlist_submissions').onValue.listen((event) async {
+      if (!event.snapshot.exists) {
+        if (mounted) {
+          setState(() {
+            _submissions = [];
+            _isLoading = false;
+          });
+        }
+        return;
+      }
+
+      final data = event.snapshot.value as Map<dynamic, dynamic>;
+      final List<Map<String, dynamic>> loadedSubmissions = [];
+      
+      for (var entry in data.entries) {
+        final key = entry.key;
+        final value = entry.value;
+        final submission = Map<String, dynamic>.from(value as Map);
+        submission['id'] = key;
         
-        data.forEach((key, value) {
-          final submission = Map<String, dynamic>.from(value as Map);
-          submission['id'] = key;
+        // Ensure all items have a quantity field
+        final List items = List.from(submission['items'] ?? []);
+        
+        // Fetch missing prices using Future.wait to execute concurrently and reliably await them
+        await Future.wait(items.map((itemDynamic) async {
+          var item = itemDynamic as Map;
+          item['quantity'] ??= 1;
           
-          // Ensure all items have a quantity field
-          final List items = List.from(submission['items'] ?? []);
-          for (var item in items) {
-            item['quantity'] ??= 1;
+          if (item['price'] == null || item['price'] == 0 || item['price'] == 0.0) {
+            try {
+              final searchId = item['id'].toString();
+              print('--- DEBUG: Fetching price for product id: $searchId ---');
+              
+              // Try document ID first
+              final doc = await _firestore.collection('products').doc(searchId).get();
+              if (doc.exists && doc.data() != null) {
+                final priceVal = doc.data()?['Price'];
+                print('--- DEBUG: Found document by ID. Price: $priceVal ---');
+                if (priceVal != null) {
+                  item['price'] = double.tryParse(priceVal.toString()) ?? 0;
+                }
+              } else {
+                // Try searching by Product_ID field just in case
+                print('--- DEBUG: Document by ID not found. Searching by Product_ID field... ---');
+                final querySnap = await _firestore.collection('products').where('Product_ID', isEqualTo: searchId).get();
+                if (querySnap.docs.isNotEmpty) {
+                  final priceVal = querySnap.docs.first.data()['Price'];
+                  print('--- DEBUG: Found document by query. Price: $priceVal ---');
+                  if (priceVal != null) {
+                    item['price'] = double.tryParse(priceVal.toString()) ?? 0;
+                  }
+                } else {
+                  print('--- DEBUG: Product $searchId not found in firestore entirely. ---');
+                }
+              }
+            } catch (e) {
+              print('--- DEBUG: Error fetching price: $e ---');
+            }
+          } else {
+            print('--- DEBUG: Price already present for ${item['id']}: ${item['price']} ---');
           }
-          submission['items'] = items;
-          
-          loadedSubmissions.add(submission);
+        }));
+
+        final List<Map<String, dynamic>> updatedItems = List<Map<String, dynamic>>.from(items.map((e) => Map<String, dynamic>.from(e)));
+        submission['items'] = updatedItems;
+        
+        // Recalculate summary in case price was updated
+        final double subtotal = updatedItems.fold(0.0, (sum, item) {
+          return sum + ((item['price'] ?? 0) * (item['quantity'] ?? 1));
         });
+        final double discountPercent = (submission['summary']?['discountPercentage'] ?? 0).toDouble();
+        final double discountAmount = subtotal * (discountPercent / 100);
+        final double total = subtotal - discountAmount;
+        
+        submission['summary'] ??= {};
+        submission['summary']['subtotal'] = subtotal;
+        submission['summary']['discountPercentage'] = discountPercent;
+        submission['summary']['discountAmount'] = discountAmount;
+        submission['summary']['total'] = total;
 
-        // Sort by timestamp descending
-        loadedSubmissions.sort((a, b) => (b['timestamp'] ?? 0).compareTo(a['timestamp'] ?? 0));
+        loadedSubmissions.add(submission);
+      }
 
+      // Sort by timestamp descending
+      loadedSubmissions.sort((a, b) => (b['timestamp'] ?? 0).compareTo(a['timestamp'] ?? 0));
+
+      if (mounted) {
         setState(() {
           _submissions = loadedSubmissions;
-          _isLoading = false;
-        });
-      } else {
-        setState(() {
-          _submissions = [];
           _isLoading = false;
         });
       }
@@ -131,7 +191,7 @@ class _WishlistScreenState extends State<WishlistScreen> {
     setState(() {
       _manualItems.add({
         'name': product['Product_Name'],
-        'price': product['Price_Min_INR'],
+        'price': product['Price'],
         'category': product['Category'],
         'id': productId,
         'quantity': 1
@@ -163,7 +223,7 @@ class _WishlistScreenState extends State<WishlistScreen> {
         final items = List<Map<String, dynamic>>.from(_submissions[subIndex]['items'].map((e) => Map<String, dynamic>.from(e)));
         items.add({
           'name': product['Product_Name'],
-          'price': product['Price_Min_INR'],
+          'price': product['Price'],
           'category': product['Category'],
           'id': productId,
           'quantity': 1
@@ -439,6 +499,69 @@ class _WishlistScreenState extends State<WishlistScreen> {
     }
   }
 
+  void _confirmSubmission(String submissionId) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text("Confirm Wishlist?"),
+        content: const Text("This will deduct stock for each product in this wishlist and remove it. Continue?"),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text("CANCEL")),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text("CONFIRM", style: TextStyle(color: Colors.green, fontWeight: FontWeight.bold)),
+          ),
+        ],
+      ),
+    );
+
+    if (confirmed != true) return;
+
+    final subIndex = _submissions.indexWhere((s) => s['id'] == submissionId);
+    if (subIndex == -1) return;
+    final submission = _submissions[subIndex];
+    final items = submission['items'] as List;
+
+    try {
+      final batch = _firestore.batch();
+      for (var item in items) {
+        final String productId = item['id'].toString();
+        final int deductQty = item['quantity'] ?? 1;
+        
+        final docRef = _firestore.collection('products').doc(productId);
+        final docSnap = await docRef.get();
+        
+        if (docSnap.exists) {
+           final data = docSnap.data();
+           if (data != null) {
+              final currentStock = int.tryParse(data['Stock_Quantity']?.toString() ?? '0') ?? 0;
+              final newStock = currentStock > deductQty ? currentStock - deductQty : 0;
+              batch.update(docRef, {'Stock_Quantity': newStock});
+           }
+        }
+      }
+      
+      await batch.commit();
+
+      await _database.child('wishlist_submissions').child(submissionId).remove();
+      setState(() {
+         _selectedSubmissions.remove(submissionId);
+      });
+
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text("Wishlist confirmed and stock deducted successfully!"), backgroundColor: Colors.green),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text("Error confirming wishlist: $e"), backgroundColor: Colors.red),
+        );
+      }
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -484,7 +607,7 @@ class _WishlistScreenState extends State<WishlistScreen> {
                   final prod = _searchResults[i];
                   return ListTile(
                     title: Text(prod['Product_Name'] ?? 'No Name'),
-                    subtitle: Text("ID: ${prod['Product_ID']} | ₹${prod['Price_Min_INR']}"),
+                    subtitle: Text("ID: ${prod['Product_ID']} | ₹${prod['Price']}"),
                     trailing: const Icon(Icons.add_circle, color: Colors.blue),
                     onTap: () => _showAddProductDialog(prod),
                   );
@@ -577,9 +700,20 @@ class _WishlistScreenState extends State<WishlistScreen> {
                                 ),
                                 title: Text(customerName, style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.blue)),
                                 subtitle: Text(DateFormat('MMM dd, yyyy HH:mm').format(date)),
-                                trailing: IconButton(
-                                  icon: const Icon(Icons.delete, color: Colors.redAccent),
-                                  onPressed: () => _deleteSubmission(sub['id']),
+                                trailing: Row(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    IconButton(
+                                      icon: const Icon(Icons.check_circle, color: Colors.green),
+                                      onPressed: () => _confirmSubmission(sub['id']),
+                                      tooltip: "Confirm & Deduct Stock",
+                                    ),
+                                    IconButton(
+                                      icon: const Icon(Icons.delete, color: Colors.redAccent),
+                                      onPressed: () => _deleteSubmission(sub['id']),
+                                      tooltip: "Delete Wishlist",
+                                    ),
+                                  ],
                                 ),
                                 children: [
                                   const Divider(),
