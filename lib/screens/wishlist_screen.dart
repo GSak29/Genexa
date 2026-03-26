@@ -25,6 +25,8 @@ class _WishlistScreenState extends State<WishlistScreen> {
   Map<String, bool> _selectedSubmissions = {};
   
   double _globalDiscount = 0.0;
+  double _globalGstPercent = 0.0;
+  bool _isGstEnabled = false;
   bool _isLoading = true;
   String _searchQuery = "";
 
@@ -33,6 +35,7 @@ class _WishlistScreenState extends State<WishlistScreen> {
     super.initState();
     _listenToWishlists();
     _listenToDiscount();
+    _listenToGst();
   }
 
   void _listenToWishlists() {
@@ -108,12 +111,15 @@ class _WishlistScreenState extends State<WishlistScreen> {
         });
         final double discountPercent = (submission['summary']?['discountPercentage'] ?? 0).toDouble();
         final double discountAmount = subtotal * (discountPercent / 100);
-        final double total = subtotal - discountAmount;
+        final double subtotalAfterDiscount = subtotal - discountAmount;
+        final double gstAmount = _isGstEnabled ? (subtotalAfterDiscount * (_globalGstPercent / 100)) : 0;
+        final double total = subtotalAfterDiscount + gstAmount;
         
         submission['summary'] ??= {};
         submission['summary']['subtotal'] = subtotal;
         submission['summary']['discountPercentage'] = discountPercent;
         submission['summary']['discountAmount'] = discountAmount;
+        submission['summary']['gstAmount'] = gstAmount;
         submission['summary']['total'] = total;
 
         loadedSubmissions.add(submission);
@@ -137,6 +143,18 @@ class _WishlistScreenState extends State<WishlistScreen> {
         final data = doc.data() as Map<String, dynamic>;
         setState(() {
           _globalDiscount = (data['amount'] ?? 0.0).toDouble();
+        });
+      }
+    });
+  }
+
+  void _listenToGst() {
+    _firestore.collection('settings').doc('general').snapshots().listen((doc) {
+      if (doc.exists && mounted) {
+        final data = doc.data() as Map<String, dynamic>;
+        setState(() {
+          _isGstEnabled = data['gstEnabled'] ?? false;
+          _globalGstPercent = (data['gstAmount'] ?? 0.0).toDouble();
         });
       }
     });
@@ -324,12 +342,15 @@ class _WishlistScreenState extends State<WishlistScreen> {
     });
     final double discountPercent = (sub['summary']['discountPercentage'] ?? 0).toDouble();
     final double discountAmount = subtotal * (discountPercent / 100);
-    final double total = subtotal - discountAmount;
+    final double subtotalAfterDiscount = subtotal - discountAmount;
+    final double gstAmount = _isGstEnabled ? (subtotalAfterDiscount * (_globalGstPercent / 100)) : 0;
+    final double total = subtotalAfterDiscount + gstAmount;
     
     _submissions[subIndex]['summary'] = {
       'subtotal': subtotal,
       'discountPercentage': discountPercent,
       'discountAmount': discountAmount,
+      'gstAmount': gstAmount,
       'total': total,
     };
   }
@@ -347,7 +368,9 @@ class _WishlistScreenState extends State<WishlistScreen> {
       return sum + ((item['price'] ?? 0) * (item['quantity'] ?? 1));
     });
     double manualDiscount = manualSubtotal * (_globalDiscount / 100);
-    total += (manualSubtotal - manualDiscount);
+    double manualSubAfterDisc = manualSubtotal - manualDiscount;
+    double manualGstAmount = _isGstEnabled ? (manualSubAfterDisc * (_globalGstPercent / 100)) : 0;
+    total += (manualSubAfterDisc + manualGstAmount);
     
     return total;
   }
@@ -367,55 +390,157 @@ class _WishlistScreenState extends State<WishlistScreen> {
           double totalDiscount = selectedSubmissions.fold(0.0, (sum, s) => sum + (s['summary']['discountAmount'] ?? 0)) +
                                  (_manualItems.fold(0.0, (sum, i) => sum + ((i['price'] ?? 0) * (i['quantity'] ?? 1))) * (_globalDiscount / 100));
           
-          double finalTotal = totalSubtotal - totalDiscount;
+          double subAfterDisc = totalSubtotal - totalDiscount;
+          double totalGst = _isGstEnabled ? (subAfterDisc * (_globalGstPercent / 100)) : 0;
+          double finalTotal = subAfterDisc + totalGst;
 
           return pw.Column(
             crossAxisAlignment: pw.CrossAxisAlignment.start,
             children: [
-              pw.Header(level: 0, child: pw.Text("GENEX STORE BILL")),
-              pw.Text("Date: ${DateFormat('yyyy-MM-dd HH:mm').format(DateTime.now())}"),
+              // Header
+              pw.Row(
+                mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
+                crossAxisAlignment: pw.CrossAxisAlignment.start,
+                children: [
+                   pw.Column(
+                     crossAxisAlignment: pw.CrossAxisAlignment.start,
+                     children: [
+                       pw.Text("KADER & KADER BOARDS", style: pw.TextStyle(fontSize: 24, fontWeight: pw.FontWeight.bold, color: PdfColors.blue900)),
+                       pw.Container(
+                         padding: const pw.EdgeInsets.symmetric(horizontal: 5, vertical: 2),
+                         color: PdfColors.teal500,
+                         child: pw.Text("Manufacturing & Supply of Precision Press Tool & Room Component", style: pw.TextStyle(color: PdfColors.white, fontSize: 10)),
+                       ),
+                       pw.SizedBox(height: 5),
+                       pw.Text("200, V.C.T.V Main Road,\nSathy Road, Erode, 638003.", style: pw.TextStyle(fontSize: 10)),
+                     ]
+                   ),
+                   pw.Column(
+                     crossAxisAlignment: pw.CrossAxisAlignment.end,
+                     children: [
+                       pw.Text("Phone: 0424 650 2114", style: pw.TextStyle(fontSize: 10)),
+                       pw.Text("Web : www.kaderkaderboards.com", style: pw.TextStyle(fontSize: 10)),
+                       pw.Text("Email : info@kaderboards.com", style: pw.TextStyle(fontSize: 10)),
+                     ]
+                   )
+                ]
+              ),
               pw.SizedBox(height: 10),
-              if (selectedSubmissions.isNotEmpty)
-                pw.Text("Customers: ${selectedSubmissions.map((s) => s['customerName'] ?? 'Anonymous').join(', ')}", style: pw.TextStyle(fontWeight: pw.FontWeight.bold)),
-              pw.SizedBox(height: 20),
+              pw.Divider(thickness: 2),
+              pw.Center(child: pw.Text("TAX INVOICE", style: pw.TextStyle(fontSize: 14, fontWeight: pw.FontWeight.bold))),
+              pw.Divider(thickness: 2),
+              pw.SizedBox(height: 10),
+
+              // Customer & Invoice Details
+              pw.Row(
+                mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
+                children: [
+                  pw.Column(
+                    crossAxisAlignment: pw.CrossAxisAlignment.start,
+                    children: [
+                      pw.Text("Customer Details:", style: pw.TextStyle(fontWeight: pw.FontWeight.bold, fontSize: 10)),
+                      if (selectedSubmissions.isNotEmpty)
+                        pw.Text("M/S:\t\t\t${selectedSubmissions.map((s) => s['customerName'] ?? 'Anonymous').join(', ')}", style: pw.TextStyle(fontSize: 10))
+                      else
+                        pw.Text("M/S:\t\t\tWalk-in Customer", style: pw.TextStyle(fontSize: 10)),
+                    ]
+                  ),
+                  pw.Column(
+                    crossAxisAlignment: pw.CrossAxisAlignment.start,
+                    children: [
+                      pw.Text("Invoice Date:\t\t\t${DateFormat('dd-MMM-yyyy').format(DateTime.now())}", style: pw.TextStyle(fontSize: 10)),
+                    ]
+                  )
+                ]
+              ),
+              pw.SizedBox(height: 15),
+
+              // Main Table
               pw.Table.fromTextArray(
                 context: context,
+                cellStyle: const pw.TextStyle(fontSize: 9),
+                headerStyle: pw.TextStyle(fontSize: 9, fontWeight: pw.FontWeight.bold),
+                headerDecoration: const pw.BoxDecoration(color: PdfColors.grey200),
                 data: <List<String>>[
-                  <String>['Product', 'Qty', 'Price', 'Subtotal'],
-                  ...selectedSubmissions.expand((s) => (s['items'] as List).map((i) {
+                  <String>['Sr. No.', 'Name of Product / Service', 'Qty', 'Rate', 'Taxable Value', if (_isGstEnabled) 'GST', 'Total'],
+                  ...selectedSubmissions.expand((s) => (s['items'] as List)).toList().asMap().entries.map((e) {
+                    final int idx = e.key + 1;
+                    final i = e.value;
                     final double p = (i['price'] ?? 0).toDouble();
                     final int q = (i['quantity'] ?? 1).toInt();
-                    return [i['name'].toString(), q.toString(), "Rs. $p", "Rs. ${p * q}"];
-                  })),
-                  ..._manualItems.map((i) {
+                    double tv = p * q;
+                    return [
+                      idx.toString(), 
+                      (i['name'] ?? '').toString(), 
+                      '$q NOS', 
+                      p.toStringAsFixed(2), 
+                      tv.toStringAsFixed(2),
+                      if (_isGstEnabled) '${(tv * (_globalGstPercent / 100)).toStringAsFixed(2)}',
+                      if (_isGstEnabled) (tv + (tv * (_globalGstPercent / 100))).toStringAsFixed(2) else tv.toStringAsFixed(2)
+                    ];
+                  }),
+                  ..._manualItems.asMap().entries.map((e) {
+                    final int index = selectedSubmissions.expand((s) => s['items']).length + e.key + 1;
+                    final i = e.value;
                     final double p = (i['price'] ?? 0).toDouble();
                     final int q = (i['quantity'] ?? 1).toInt();
-                    return [i['name'].toString(), q.toString(), "Rs. $p", "Rs. ${p * q}"];
+                    double tv = p * q;
+                    return [
+                      index.toString(),
+                      (i['name'] ?? '').toString(),
+                      '$q NOS',
+                      p.toStringAsFixed(2),
+                      tv.toStringAsFixed(2),
+                      if (_isGstEnabled) '${(tv * (_globalGstPercent / 100)).toStringAsFixed(2)}',
+                      if (_isGstEnabled) (tv + (tv * (_globalGstPercent / 100))).toStringAsFixed(2) else tv.toStringAsFixed(2)
+                    ];
                   }),
                 ],
               ),
-              pw.Divider(),
+              pw.SizedBox(height: 10),
+              
+              // Totals Block
+              pw.Container(
+                alignment: pw.Alignment.centerRight,
+                child: pw.Column(
+                  crossAxisAlignment: pw.CrossAxisAlignment.end,
+                  children: [
+                    pw.Row(mainAxisAlignment: pw.MainAxisAlignment.end, children: [pw.Text("Taxable Amount:  ", style: const pw.TextStyle(fontSize: 10)), pw.Text(subAfterDisc.toStringAsFixed(2), style: pw.TextStyle(fontSize: 10, fontWeight: pw.FontWeight.bold))]),
+                    if (_isGstEnabled)
+                      pw.Row(mainAxisAlignment: pw.MainAxisAlignment.end, children: [pw.Text("Total Tax:  ", style: const pw.TextStyle(fontSize: 10)), pw.Text(totalGst.toStringAsFixed(2), style: const pw.TextStyle(fontSize: 10))]),
+                    pw.SizedBox(height: 5),
+                    pw.Row(mainAxisAlignment: pw.MainAxisAlignment.end, children: [pw.Text("Total Amount After Tax:  ", style: pw.TextStyle(fontSize: 12, fontWeight: pw.FontWeight.bold)), pw.Text("Rs. ${finalTotal.toStringAsFixed(2)}", style: pw.TextStyle(fontSize: 12, fontWeight: pw.FontWeight.bold))]),
+                  ]
+                )
+              ),
+              pw.Spacer(),
+              
+              // Footer
               pw.Row(
                 mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
+                crossAxisAlignment: pw.CrossAxisAlignment.end,
                 children: [
-                  pw.Text("Subtotal:"),
-                  pw.Text("Rs. ${totalSubtotal.toStringAsFixed(0)}"),
-                ],
+                  pw.Column(
+                    crossAxisAlignment: pw.CrossAxisAlignment.start,
+                    children: [
+                      pw.Text("Terms and Conditions", style: pw.TextStyle(fontSize: 10, fontWeight: pw.FontWeight.bold)),
+                      pw.Text("Subject to Maharashtra Jurisdiction.\nOur Responsibility Ceases as soon as goods leaves our Premises.\nGoods once sold will not taken back.", style: const pw.TextStyle(fontSize: 8)),
+                    ]
+                  ),
+                  pw.Column(
+                    crossAxisAlignment: pw.CrossAxisAlignment.center,
+                    children: [
+                      pw.Text("For KADER & KADER BOARDS", style: pw.TextStyle(fontSize: 10, fontWeight: pw.FontWeight.bold)),
+                      pw.SizedBox(height: 30),
+                      pw.Text("Authorised Signatory", style: const pw.TextStyle(fontSize: 8)),
+                    ]
+                  )
+                ]
               ),
-              pw.Row(
-                mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
-                children: [
-                  pw.Text("Total Discount:"),
-                  pw.Text("Rs. ${totalDiscount.toStringAsFixed(0)}"),
-                ],
-              ),
-              pw.Row(
-                mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
-                children: [
-                  pw.Text("Final Total:", style: pw.TextStyle(fontWeight: pw.FontWeight.bold)),
-                  pw.Text("Rs. ${finalTotal.toStringAsFixed(0)}", style: pw.TextStyle(fontWeight: pw.FontWeight.bold)),
-                ],
-              ),
+              pw.SizedBox(height: 15),
+              pw.Center(
+                child: pw.Text("developed by genexa", style: pw.TextStyle(fontStyle: pw.FontStyle.italic, fontSize: 8, color: PdfColors.grey))
+              )
             ],
           );
         },
