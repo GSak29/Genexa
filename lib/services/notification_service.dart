@@ -25,6 +25,12 @@ class NotificationService {
       },
     );
 
+    // Request permissions for Android 13+
+    await flutterLocalNotificationsPlugin
+        .resolvePlatformSpecificImplementation<
+            AndroidFlutterLocalNotificationsPlugin>()
+        ?.requestNotificationsPermission();
+
     // Create high importance channel for Android
     const AndroidNotificationChannel channel = AndroidNotificationChannel(
       'genex_high_importance_channel', // id

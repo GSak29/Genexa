@@ -156,16 +156,32 @@ class _MainScreenState extends State<MainScreen> {
     return Scaffold(
       body: _widgetOptions.elementAt(_selectedIndex),
       bottomNavigationBar: BottomNavigationBar(
-        items: const <BottomNavigationBarItem>[
-          BottomNavigationBarItem(
+        items: <BottomNavigationBarItem>[
+          const BottomNavigationBarItem(
             icon: Icon(Icons.dashboard),
             label: 'Dashboard',
           ),
           BottomNavigationBarItem(
-            icon: Icon(Icons.notifications),
+            icon: StreamBuilder<QuerySnapshot>(
+              stream: FirebaseFirestore.instance
+                  .collection('notifications')
+                  .where('read', isEqualTo: false)
+                  .snapshots(),
+              builder: (context, snapshot) {
+                int unreadCount = 0;
+                if (snapshot.hasData) {
+                  unreadCount = snapshot.data!.docs.length;
+                }
+                return Badge(
+                  isLabelVisible: unreadCount > 0,
+                  label: Text(unreadCount.toString()),
+                  child: const Icon(Icons.notifications),
+                );
+              },
+            ),
             label: 'Alerts',
           ),
-          BottomNavigationBarItem(
+          const BottomNavigationBarItem(
             icon: Icon(Icons.receipt_long),
             label: 'Wishlists',
           ),
